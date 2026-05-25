@@ -129,12 +129,28 @@ class GTTSEngine(TTS):
         self._channels = channels
         self._stop_flag = False
         self._on_latency_event = on_latency_event
+        self._pcm_cache: dict[str, bytes] = {}
 
     async def synthesize(self, text: str) -> bytes:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._synthesize_sync, text)
 
+    async def prepare_texts(self, texts: list[str] | tuple[str, ...]) -> None:
+        """Pre-synthesize fixed prompts so first wake acknowledgement is instant."""
+        for text in texts:
+            if not text or text in self._pcm_cache:
+                continue
+            try:
+                await self.synthesize(text)
+                logger.info("GTTSEngine cache warmed: %s", text[:80])
+            except Exception:
+                logger.exception("GTTSEngine cache warm failed: %s", text[:80])
+
     def _synthesize_sync(self, text: str) -> bytes:
+        cached = self._pcm_cache.get(text)
+        if cached is not None:
+            return cached
+
         from gtts import gTTS  # lazy
 
         buf = io.BytesIO()
@@ -164,6 +180,7 @@ class GTTSEngine(TTS):
                 proc.stderr.decode(errors="replace")[:300],
             )
             return b""
+        self._pcm_cache[text] = proc.stdout
         return proc.stdout
 
     async def speak(

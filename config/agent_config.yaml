@@ -86,8 +86,8 @@ stt:
   sample_rate: 16000           # webrtcvad/whisper 표준
   frame_ms: 30                 # 10/20/30 만 허용
   vad_aggressiveness: 2        # 3은 사용자 발화 누락↑ — 대화 중 2 권장
-  silence_tail_ms: 650         # 말 끝 여유 (TV 환경)
-  min_utterance_ms: 350
+  silence_tail_ms: 450         # 짧은 호출어 종료 감지 지연을 줄임
+  min_utterance_ms: 250
   max_utterance_ms: 8000       # TV/방송 소리 12초 연속 캡처 방지
   whisper_backend: "gemini_stt" # gemini_stt | openai_whisper | faster_whisper
   gemini_stt_model: "gemini-2.5-flash"
@@ -105,17 +105,23 @@ stt:
   initial_prompt: "오디스 오디스야"
   wake_focus_prompt: "오디스 오디스야"
   wake_focus_scan_enabled: true
-  wake_focus_scan_min_duration_sec: 2.5
-  wake_focus_tail_sec: 2.8
-  wake_focus_head_sec: 2.5
+  wake_focus_scan_min_duration_sec: 0.8
+  wake_focus_tail_sec: 1.2
+  wake_focus_head_sec: 1.0
   wake_rolling_scan_enabled: true
-  wake_rolling_scan_interval_ms: 2000
-  wake_rolling_scan_min_speech_ms: 2500
+  wake_rolling_scan_interval_ms: 500
+  wake_rolling_scan_min_speech_ms: 600
+  wake_fast_path_enabled: true
+  wake_fast_path_max_duration_sec: 1.8
+  wake_stt_backend: "faster_whisper" # wake-only는 로컬 tiny 모델로 먼저 확인해 Gemini 왕복을 피함
+  wake_whisper_model: "tiny"
+  wake_whisper_compute_type: "int8"
+  wake_whisper_device: "${ODISS_WAKE_WHISPER_DEVICE:-cpu}"
   discard_non_wake_background: true
   duplicate_turn_ttl_sec: 4
   repeat_tts_suppress_sec: 60
   generic_repeat_tts_suppress_sec: 8
-  post_tts_listen_grace_sec: 3.5   # 서버 TTS 직후 마이크 준비 시간 (스피커 잔향)
+  post_tts_listen_grace_sec: 0.6   # 서버 TTS 직후 마이크 준비 시간 (스피커 잔향)
   dialogue_session_timeout_sec: 300
   followup_listen_timeout_sec: 300
   question_wait_timeout_sec: 35

@@ -255,6 +255,14 @@ class LocalAgent:
                 wake_rolling_scan_min_speech_ms=int(
                     stt_cfg.get("wake_rolling_scan_min_speech_ms", 2500)
                 ),
+                wake_fast_path_enabled=stt_cfg.get("wake_fast_path_enabled", True),
+                wake_fast_path_max_duration_sec=float(
+                    stt_cfg.get("wake_fast_path_max_duration_sec", 1.8)
+                ),
+                wake_stt_backend=stt_cfg.get("wake_stt_backend", "same"),
+                wake_whisper_model=stt_cfg.get("wake_whisper_model", "tiny"),
+                wake_whisper_compute_type=stt_cfg.get("wake_whisper_compute_type", "int8"),
+                wake_whisper_device=stt_cfg.get("wake_whisper_device", "cpu"),
                 discard_non_wake_background=stt_cfg.get(
                     "discard_non_wake_background", True
                 ),
@@ -430,6 +438,7 @@ class LocalAgent:
             await self.audio_pipeline.start()
         await self.vad.start()
         await self.stt.start_stream()
+        await self._prewarm_tts()
 
         self._wire_edges()
 
@@ -457,6 +466,12 @@ class LocalAgent:
 
         # StateMachine 전이 콜백 등록
         self.state_machine.on_transition(self._on_state_transition)
+
+    async def _prewarm_tts(self) -> None:
+        prepare = getattr(self.tts, "prepare_texts", None)
+        if prepare is None:
+            return
+        await prepare(self.wait_ux.immediate_response_templates())
 
     async def _wakeword_loop(self) -> None:
         """엣지 1-2, 8: User --> STT --> VAD --> Wait_UX --> TTS --> Speaker
