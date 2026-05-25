@@ -128,6 +128,7 @@ class GTTSEngine(TTS):
         self._sample_rate = sample_rate
         self._channels = channels
         self._stop_flag = False
+        self._cancel_version = 0
         self._on_latency_event = on_latency_event
         self._pcm_cache: dict[str, bytes] = {}
 
@@ -193,6 +194,7 @@ class GTTSEngine(TTS):
         if not text:
             return
         self._stop_flag = False
+        cancel_version = self._cancel_version
         logger.info("GTTSEngine speak [%s]: %s", priority.name, text)
         hook = self._on_latency_event
         if hook is not None:
@@ -209,7 +211,7 @@ class GTTSEngine(TTS):
         if not pcm:
             logger.error("TTS 합성 결과 PCM이 비어 있음: %s", text[:120])
             return
-        if self._stop_flag:
+        if self._stop_flag or cancel_version != self._cancel_version:
             logger.info("TTS 재생 전 중단됨: %s", text[:120])
             return
         logger.info("GTTSEngine PCM 생성 완료: %d bytes role=%s", len(pcm), trace_role)
@@ -230,6 +232,7 @@ class GTTSEngine(TTS):
 
     async def stop(self) -> None:
         self._stop_flag = True
+        self._cancel_version += 1
         try:
             await self._speaker.stop()
         except Exception:

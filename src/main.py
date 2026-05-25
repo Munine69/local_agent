@@ -189,6 +189,7 @@ class LocalAgent:
         self._last_tts_completed_at = 0.0
         self._ocr_exchange_active = False
         self._ocr_confirmation_pending = False
+        self._pending_cloud_filler_texts: set[str] = set()
 
         # --- Home_Environment 노드 ---
         rtsp_cfg = cfg.get("rtsp", {})
@@ -605,6 +606,26 @@ class LocalAgent:
             logger.info("촬영 완료 전 품질 안내 TTS 큐 %d건 제거", drained)
         return drained
 
+    def _drain_pending_cloud_fillers(self) -> int:
+        if not self._pending_cloud_filler_texts:
+            return 0
+        kept: list[str] = []
+        drained = 0
+        while True:
+            try:
+                text = self._tts_queue.get_nowait()
+            except QueueEmpty:
+                break
+            if text in self._pending_cloud_filler_texts:
+                drained += 1
+            else:
+                kept.append(text)
+        for text in kept:
+            self._tts_queue.put_nowait(text)
+        if drained:
+            logger.info("최종 답변 전 대기 filler 큐 %d건 제거", drained)
+        return drained
+
     def _discard_prefilled_transcriptions(self) -> int:
         if self.audio_pipeline is None:
             return 0
@@ -895,6 +916,7 @@ class LocalAgent:
         logger.info("Cloud 대화 시작: '%s'", text)
         self._latency.mark("cloud_dialogue_start", text_preview=text[:120])
         status = "ok"
+        self._pending_cloud_filler_texts.clear()
         try:
             async for message in self.cloud_chat.send_stt(
                 text,
@@ -905,11 +927,15 @@ class LocalAgent:
                 if msg_type == "filler":
                     filler = CloudChatClient.spoken_text(message)
                     if filler:
+                        self._drain_pending_cloud_fillers()
+                        self._pending_cloud_filler_texts.add(filler)
                         self._pending_tts_role = "filler"
                         await self._tts_queue.put(filler)
                 elif msg_type == "identity_check":
                     spoken = CloudChatClient.spoken_text(message)
                     logger.info("Cloud identity_check 수신: %s", spoken[:120])
+                    self._drain_pending_cloud_fillers()
+                    await self.tts.stop()
                     await self._speak_cloud_spoken(
                         spoken,
                         trace_role="identity_check",
@@ -918,6 +944,8 @@ class LocalAgent:
                     status = "identity_check"
                 elif msg_type in {"response", "reminder", "ocr_processed"}:
                     spoken = CloudChatClient.spoken_text(message)
+                    self._drain_pending_cloud_fillers()
+                    await self.tts.stop()
                     await self._speak_cloud_spoken(
                         spoken,
                         trace_role="response",
@@ -925,6 +953,7 @@ class LocalAgent:
                     )
                 elif msg_type == "ocr_request":
                     spoken = CloudChatClient.spoken_text(message)
+                    self._drain_pending_cloud_fillers()
                     if spoken:
                         self._pending_tts_role = "ocr_request"
                         await self._tts_queue.put(spoken)
@@ -950,6 +979,7 @@ class LocalAgent:
             self._latency.mark("cloud_dialogue_end", status=status)
             if finalize_trace:
                 self._latency.end_turn(status=status, text_preview=text[:120])
+            self._pending_cloud_filler_texts.clear()
 
     async def _on_state_transition(
         self,
