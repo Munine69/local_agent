@@ -17,10 +17,9 @@ import struct
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.config_loader import load_config
 from src.home_environment.speaker import LocalSpeaker
 
 
@@ -41,9 +40,7 @@ def generate_sine_pcm(
 
 
 async def main() -> None:
-    config_path = Path(__file__).resolve().parent.parent / "config" / "agent_config.yaml"
-    with open(config_path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg = load_config()
 
     audio_cfg = cfg.get("audio", {})
     device = audio_cfg.get("output_device", "default")

@@ -582,7 +582,12 @@ class OCREngine:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
             lines = [text]
-        logger.info("Gemini OCR 텍스트 추출 성공: %d lines", len(lines))
+        logger.info(
+            "Gemini OCR 텍스트 추출 성공: %d lines image_path=%s",
+            len(lines),
+            image_path,
+        )
+        logger.info("Gemini OCR 원문:\n%s", "\n".join(lines))
         return lines, [0.95] * len(lines)
 
     def _generate_gemini_content(self, image: Any) -> str | None:

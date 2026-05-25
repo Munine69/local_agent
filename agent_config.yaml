@@ -16,7 +16,6 @@ quality:
   brightness_min: 50
   brightness_max: 230
   glare_max_ratio: 0.15
-  quality_fail_cooldown_sec: 5.0
 
 capture:
   timer_seconds: 3
@@ -53,7 +52,6 @@ cloud:
   websocket_path: "/ws/chat"
   timeout_sec: 10.0
   websocket_timeout_sec: 120.0
-  websocket_first_response_timeout_sec: 8.0
   retry_count: 3
   retry_backoff_sec: 1.0
 
@@ -67,7 +65,6 @@ audio:
   input_device: "${ODISS_AUDIO_INPUT:-plughw:CARD=USB,DEV=0}"
   sample_rate: 22050   # speaker 출력 샘플레이트
   channels: 1
-  capture_shutter_path: "runtime/audio/camera_shutter.wav"
 
 tts:
   # 실제 음성 합성 여부. false면 StubTTS (로그만)
@@ -85,41 +82,15 @@ stt:
   input_device: "${ODISS_AUDIO_INPUT:-plughw:CARD=USB,DEV=0}"
   sample_rate: 16000           # webrtcvad/whisper 표준
   frame_ms: 30                 # 10/20/30 만 허용
-  vad_aggressiveness: 2        # 3은 사용자 발화 누락↑ — 대화 중 2 권장
-  silence_tail_ms: 650         # 말 끝 여유 (TV 환경)
-  min_utterance_ms: 350
+  vad_aggressiveness: 3        # 0~3 (높을수록 주변 잡음에 덜 반응)
+  silence_tail_ms: 500
+  min_utterance_ms: 400
   max_utterance_ms: 8000       # TV/방송 소리 12초 연속 캡처 방지
-  whisper_backend: "gemini_stt" # gemini_stt | openai_whisper | faster_whisper
-  gemini_stt_model: "gemini-2.5-flash"
-  gemini_api_key: ""
-  gemini_api_key_env: "GEMINI_API_KEY"
-  gemini_stt_prompt: |
-    이 오디오는 한국어 음성입니다.
-    들리는 발화만 그대로 전사하세요.
-    추측하거나 문장을 보완하지 마세요.
-    음성이 없거나 불명확하면 빈 문자열만 반환하세요.
-  whisper_model: "medium"      # openai_whisper/faster_whisper fallback
-  whisper_compute_type: "float16"
-  whisper_device: "cuda"
+  whisper_model: "small"       # tiny / base / small / medium / large-v3
+  whisper_compute_type: "int8" # cpu/jetson 권장
+  whisper_device: "cpu"        # cuda 가능 시 변경
   language: "ko"
-  initial_prompt: "오디스 오디스야"
-  wake_focus_prompt: "오디스 오디스야"
-  wake_focus_scan_enabled: true
-  wake_focus_scan_min_duration_sec: 2.5
-  wake_focus_tail_sec: 2.8
-  wake_focus_head_sec: 2.5
-  wake_rolling_scan_enabled: true
-  wake_rolling_scan_interval_ms: 2000
-  wake_rolling_scan_min_speech_ms: 2500
-  discard_non_wake_background: true
-  duplicate_turn_ttl_sec: 4
-  repeat_tts_suppress_sec: 60
-  generic_repeat_tts_suppress_sec: 8
-  post_tts_listen_grace_sec: 3.5   # 서버 TTS 직후 마이크 준비 시간 (스피커 잔향)
-  dialogue_session_timeout_sec: 300
-  followup_listen_timeout_sec: 300
-  question_wait_timeout_sec: 35
-  max_empty_stt_skips: 24
+  initial_prompt: "오디스, 오디스야, 어디스, 약, 처방전, 복용, 사진, 찍어, 가져왔어, 김영수"
 
 latency_trace:
   enabled: true

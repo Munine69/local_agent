@@ -14,23 +14,13 @@ mermaid 매핑:
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
-import os
 import time
-import wave
-from collections import deque
 from dataclasses import dataclass, field
 
 import webrtcvad
 
 from src.edge_node.stt import TranscriptionResult
-from src.edge_node.stt_sanitize import (
-    is_prompt_echo_transcript,
-    is_short_noise_hallucination,
-    is_tts_echo_transcript,
-    normalize_transcript,
-)
 from src.edge_node.vad import WakeWordResult, detect_wake_in_text, strip_wake_from_text
 from src.runtime.latency_trace import get_latency_recorder
 
@@ -49,20 +39,14 @@ class AudioPipelineConfig:
     min_utterance_ms: int = 300  # 너무 짧은 잡음 무시
     max_utterance_ms: int = 12000  # utterance 최대 길이
 
-    whisper_backend: str = "faster_whisper"  # faster_whisper | openai_whisper | gemini_stt
     whisper_model: str = "small"  # tiny/base/small/medium/large-v3
     whisper_compute_type: str = "int8"  # CPU/Jetson 권장
     whisper_device: str = "cpu"  # cpu | cuda
-    gemini_stt_model: str = "gemini-2.5-flash"
-    gemini_api_key: str = ""
-    gemini_api_key_env: str = "GEMINI_API_KEY"
-    gemini_stt_prompt: str = (
-        "이 오디오는 한국어 음성입니다. 들리는 발화만 그대로 전사하세요. "
-        "추측하거나 문장을 보완하지 마세요. 음성이 없거나 불명확하면 빈 문자열만 반환하세요."
-    )
     language: str = "ko"
-    initial_prompt: str = "오디스 오디스야 김영수 약"
-    wake_focus_prompt: str = "오디스 오디스야"
+    initial_prompt: str = (
+        "오디스, 오디스야, 어디스, 약, 처방전, 복용, 사진, 찍어, 가져왔어"
+    )
+    wake_focus_prompt: str = "오디스, 오디스야, 어디스, 오디서"
     wake_focus_scan_enabled: bool = True
     wake_focus_scan_min_duration_sec: float = 2.5
     wake_focus_tail_sec: float = 2.8
@@ -166,9 +150,6 @@ class AudioPipeline:
         self._utterance_wake_triggered = False
         self._rolling_scan_task: asyncio.Task | None = None
         self._dialogue_capture_active = False
-        self._dialogue_capture_grace_until = 0.0
-        self._wake_suppressed = False
-        self._recent_tts_texts: deque[tuple[float, str]] = deque(maxlen=8)
 
     async def start(self) -> None:
         if self._running:
@@ -182,38 +163,6 @@ class AudioPipeline:
     def _load_whisper(self) -> None:
         if self._whisper is not None:
             return
-        if self._cfg.whisper_backend == "gemini_stt":
-            api_key = self._cfg.gemini_api_key or os.environ.get(
-                self._cfg.gemini_api_key_env,
-                "",
-            )
-            if not api_key.strip():
-                raise RuntimeError(
-                    f"gemini_stt requires {self._cfg.gemini_api_key_env}"
-                )
-            from google import genai
-
-            self._whisper = genai.Client(api_key=api_key.strip())
-            logger.info("Gemini STT 로드 완료: model=%s", self._cfg.gemini_stt_model)
-            return
-        if self._cfg.whisper_backend == "openai_whisper":
-            logger.info(
-                "openai-whisper 로드: model=%s device=%s",
-                self._cfg.whisper_model,
-                self._cfg.whisper_device,
-            )
-            import torch
-            import whisper
-
-            if self._cfg.whisper_device == "cuda" and not torch.cuda.is_available():
-                raise RuntimeError("whisper_device=cuda 이지만 torch CUDA를 사용할 수 없습니다")
-            self._whisper = whisper.load_model(
-                self._cfg.whisper_model,
-                device=self._cfg.whisper_device,
-            )
-            logger.info("openai-whisper 로드 완료")
-            return
-
         logger.info(
             "faster-whisper 로드: model=%s device=%s compute=%s",
             self._cfg.whisper_model,
@@ -232,37 +181,7 @@ class AudioPipeline:
     def set_dialogue_capture_active(self, active: bool) -> None:
         """웨이크 대화 세션 중에는 웨이크어 없는 사용자 발화도 transcription 큐로 보낸다."""
         self._dialogue_capture_active = active
-        if active:
-            self._wake_suppressed = True
         logger.info("dialogue_capture_active=%s", active)
-
-    def set_wake_suppressed(self, suppressed: bool) -> None:
-        self._wake_suppressed = suppressed
-
-    def extend_dialogue_capture_grace(self, ttl_sec: float) -> None:
-        self._dialogue_capture_grace_until = max(
-            self._dialogue_capture_grace_until,
-            time.monotonic() + ttl_sec,
-        )
-        logger.info("dialogue_capture_grace_until=%.3f", self._dialogue_capture_grace_until)
-
-    def remember_tts_text(self, text: str, *, ttl_sec: float = 45.0) -> None:
-        """Remember local TTS text so STT can drop speaker echo by content."""
-        cleaned = normalize_transcript(text)
-        if not cleaned:
-            return
-        self._recent_tts_texts.append((time.time() + ttl_sec, cleaned))
-        logger.info("TTS 에코 필터 등록: '%s'", cleaned[:80])
-
-    def drain_wake_queue(self) -> int:
-        drained = 0
-        while True:
-            try:
-                self.wake_queue.get_nowait()
-                drained += 1
-            except asyncio.QueueEmpty:
-                break
-        return drained
 
     async def stop(self) -> None:
         self._running = False
@@ -363,7 +282,7 @@ class AudioPipeline:
         loop: asyncio.AbstractEventLoop,
         frames: list[bytes],
     ) -> None:
-        if self._utterance_wake_triggered or self._wake_suppressed:
+        if self._utterance_wake_triggered:
             return
         pcm = b"".join(frames)
         tail_pcm = self._slice_pcm_tail(pcm, self._cfg.wake_focus_tail_sec)
@@ -410,27 +329,12 @@ class AudioPipeline:
             audio_duration_sec=round(duration, 2),
             text_preview=(text or "")[:120],
         )
-        text = normalize_transcript(text)
-        if is_prompt_echo_transcript(text):
-            logger.info("STT 프롬프트 환각으로 추정, 무시: '%s'", text[:100])
-            return
-        if is_short_noise_hallucination(text, duration):
-            logger.info(
-                "짧은 잡음 STT 환각으로 추정, 무시: '%s' duration=%.2fs",
-                text[:100],
-                duration,
-            )
-            return
-        if self._is_recent_tts_echo(text):
-            logger.info("TTS 에코 STT로 추정, 무시: '%s'", text[:100])
-            return
-
+        text = (text or "").strip()
         wake_hit = detect_wake_in_text(text)
         wake_source = "full"
 
         if (
             not wake_hit
-            and not self._wake_suppressed
             and self._cfg.wake_focus_scan_enabled
             and duration >= self._cfg.wake_focus_scan_min_duration_sec
         ):
@@ -447,7 +351,7 @@ class AudioPipeline:
         if text:
             logger.info("STT 결과: '%s'", text)
 
-        if wake_hit and not already_woken and not self._wake_suppressed:
+        if wake_hit and not already_woken:
             if wake_source != "full":
                 logger.info(
                     "TV/배경 구간 웨이크 스캔(%s): '%s' -> '%s'",
@@ -460,13 +364,7 @@ class AudioPipeline:
             await self._emit_wake(wake_hit, text, started_at=started_at)
             return
 
-        if (
-            (
-                self._dialogue_capture_active
-                or time.monotonic() < self._dialogue_capture_grace_until
-            )
-            and text
-        ):
+        if self._dialogue_capture_active and text:
             await self.transcription_queue.put(
                 TranscriptionResult(text=text, confidence=1.0, timestamp=started_at)
             )
@@ -489,12 +387,6 @@ class AudioPipeline:
             TranscriptionResult(text=text, confidence=1.0, timestamp=started_at)
         )
 
-    def _is_recent_tts_echo(self, text: str) -> bool:
-        now = time.time()
-        while self._recent_tts_texts and self._recent_tts_texts[0][0] < now:
-            self._recent_tts_texts.popleft()
-        return is_tts_echo_transcript(text, [item[1] for item in self._recent_tts_texts])
-
     async def _emit_wake(
         self,
         wake_hit: str,
@@ -502,16 +394,6 @@ class AudioPipeline:
         *,
         started_at: float,
     ) -> None:
-        if self._wake_suppressed:
-            if text.strip():
-                await self.transcription_queue.put(
-                    TranscriptionResult(
-                        text=strip_wake_from_text(text, wake_hit) or text,
-                        confidence=1.0,
-                        timestamp=started_at,
-                    )
-                )
-            return
         self._utterance_wake_triggered = True
         await self.wake_queue.put(
             WakeWordResult(detected=True, keyword=wake_hit, confidence=1.0)
@@ -564,28 +446,7 @@ class AudioPipeline:
             return ""
         import numpy as np
 
-        if self._cfg.whisper_backend == "gemini_stt":
-            return self._transcribe_gemini_sync(
-                pcm_bytes,
-                prompt=(
-                    self._cfg.gemini_stt_prompt
-                    + "\n웨이크워드 후보는 '오디스', '오디스야'입니다."
-                ),
-            )
-
         audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        if self._cfg.whisper_backend == "openai_whisper":
-            result = self._whisper.transcribe(
-                audio,
-                language=self._cfg.language,
-                initial_prompt=self._cfg.wake_focus_prompt,
-                fp16=self._cfg.whisper_device == "cuda",
-                condition_on_previous_text=False,
-                temperature=0.0,
-                beam_size=1,
-            )
-            return normalize_transcript(str(result.get("text", "")))
-
         segments, _info = self._whisper.transcribe(
             audio,
             language=self._cfg.language,
@@ -593,9 +454,8 @@ class AudioPipeline:
             vad_filter=False,
             beam_size=1,
             without_timestamps=True,
-            condition_on_previous_text=False,
         )
-        return normalize_transcript(" ".join(seg.text for seg in segments))
+        return " ".join(seg.text for seg in segments).strip()
 
     def drain_transcription_queue(self) -> int:
         drained = 0
@@ -612,63 +472,12 @@ class AudioPipeline:
             return ""
         import numpy as np
 
-        if self._cfg.whisper_backend == "gemini_stt":
-            return self._transcribe_gemini_sync(
-                pcm_bytes,
-                prompt=self._cfg.gemini_stt_prompt,
-            )
-
         audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        if self._cfg.whisper_backend == "openai_whisper":
-            result = self._whisper.transcribe(
-                audio,
-                language=self._cfg.language,
-                initial_prompt=self._cfg.initial_prompt,
-                fp16=self._cfg.whisper_device == "cuda",
-                condition_on_previous_text=False,
-                temperature=0.0,
-                beam_size=1,
-                compression_ratio_threshold=2.4,
-                logprob_threshold=-1.0,
-                no_speech_threshold=0.5,
-            )
-            return normalize_transcript(str(result.get("text", "")))
-
         segments, _info = self._whisper.transcribe(
             audio,
             language=self._cfg.language,
             initial_prompt=self._cfg.initial_prompt,
             vad_filter=False,
             beam_size=1,
-            condition_on_previous_text=False,
-            compression_ratio_threshold=2.4,
-            log_prob_threshold=-1.0,
-            no_speech_threshold=0.5,
         )
-        return normalize_transcript(" ".join(seg.text for seg in segments))
-
-    def _transcribe_gemini_sync(self, pcm_bytes: bytes, *, prompt: str) -> str:
-        from google.genai import types
-
-        wav_bytes = self._pcm_to_wav_bytes(pcm_bytes)
-        response = self._whisper.models.generate_content(
-            model=self._cfg.gemini_stt_model,
-            contents=[
-                prompt,
-                types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-            ],
-            config=types.GenerateContentConfig(
-                temperature=0,
-                candidate_count=1,
-            ),
-        )
-        return normalize_transcript(getattr(response, "text", "") or "")
-
-    def _pcm_to_wav_bytes(self, pcm_bytes: bytes) -> bytes:
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(self._cfg.sample_rate)
-            wav.writeframes(pcm_bytes)
-        return buf.getvalue()
+        return " ".join(seg.text for seg in segments).strip()

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
@@ -50,9 +51,9 @@ _TEMPLATES: dict[MentType, list[str]] = {
         "거의 다 됐어요, 어르신. 조금만 기다려 주세요~",
     ],
     MentType.RETRY_REQUEST: [
-        "어르신, 약봉투를 다시 들어주시겠어요?",
-        "어르신, 사진이 잘 안 나왔어요. 다시 한 번 보여주시겠어요?",
-        "어르신, 글씨가 잘 안 보여서요. 다시 한 번만 보여주세요~",
+        "찍힌 사진에서 글씨를 정확히 인식하기 어려웠어요. 약봉투나 처방전을 다시 한 번 보여주세요.",
+        "방금 사진의 인식률이 낮아서 다시 촬영이 필요해요. 글자가 잘 보이게 한 번만 더 보여주세요.",
+        "촬영된 사진을 읽기 어려웠어요. 약봉투를 카메라 앞에 다시 들어주세요.",
     ],
     MentType.QUALITY_GUIDE: [],
     MentType.CONFIDENCE_CONFIRM: [],
@@ -95,8 +96,11 @@ class WaitUX:
     def __init__(
         self,
         escalation_intervals: list[float] | None = None,
+        quality_guide_cooldown_sec: float = 5.0,
     ) -> None:
         self._escalation_intervals = escalation_intervals or [3.0, 7.0, 15.0]
+        self._quality_guide_cooldown_sec = quality_guide_cooldown_sec
+        self._last_quality_guide_at: dict[str, float] = {}
         self._tts_queue: asyncio.Queue[str] | None = None
         self._waiting_task: asyncio.Task[None] | None = None
 
@@ -134,8 +138,14 @@ class WaitUX:
         reason 은 QualityFailReason enum 이거나 그 name 문자열.
         """
         reason_key = reason.name if hasattr(reason, "name") else str(reason)
+        now = time.monotonic()
+        last_at = self._last_quality_guide_at.get(reason_key, 0.0)
+        if now - last_at < self._quality_guide_cooldown_sec:
+            logger.debug("품질 가이드 쿨다운 중: %s", reason_key)
+            return
         templates = _QUALITY_GUIDE_TEMPLATES.get(reason_key, [])
         if templates:
+            self._last_quality_guide_at[reason_key] = now
             text = random.choice(templates)
             await self._send_to_tts(text)
         else:

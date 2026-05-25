@@ -33,7 +33,11 @@ class DrugParserConfig:
     retry_backoff_sec: float = 1.0
 
 
-def _to_server_ocr_payload(agent_payload: dict[str, Any]) -> dict[str, Any]:
+def to_server_ocr_payload(
+    agent_payload: dict[str, Any],
+    *,
+    speaker_id: str | None = None,
+) -> dict[str, Any]:
     """Translate ``OCRResult.to_dict()`` output into the ai-server contract.
 
     The ai-server ``POST /api/ocr/analyze`` endpoint expects a flat schema::
@@ -77,8 +81,12 @@ def _to_server_ocr_payload(agent_payload: dict[str, Any]) -> dict[str, Any]:
         "raw_text": text,
         "medications": medications,
         "confidence": confidence,
-        "speaker_id": agent_payload.get("speaker_id"),
+        "speaker_id": speaker_id or agent_payload.get("speaker_id"),
     }
+
+
+def _to_server_ocr_payload(agent_payload: dict[str, Any]) -> dict[str, Any]:
+    return to_server_ocr_payload(agent_payload)
 
 
 class DrugParserClient(ABC):

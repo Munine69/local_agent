@@ -81,12 +81,15 @@ class Buffer:
         cam: Cam,
         quality_config: QualityConfig | None = None,
         buffer_size: int = 30,
+        quality_fail_cooldown_sec: float = 5.0,
     ) -> None:
         self._cam = cam
         self._quality_config = quality_config or QualityConfig()
         self._buffer: deque[BufferedFrame] = deque(maxlen=buffer_size)
         self._active = False
         self._on_quality_fail: asyncio.Queue[QualityFailReason] | None = None
+        self._quality_fail_cooldown_sec = quality_fail_cooldown_sec
+        self._last_quality_fail_at: dict[QualityFailReason, float] = {}
 
     def set_quality_fail_queue(self, queue: asyncio.Queue[QualityFailReason]) -> None:
         self._on_quality_fail = queue
@@ -95,6 +98,7 @@ class Buffer:
         """State3 --"촬영 실행"--> Buffer: 버퍼링 활성화."""
         self._active = True
         self._buffer.clear()
+        self._last_quality_fail_at.clear()
         logger.info("Buffer 활성화: 프레임 수집 시작")
 
     def deactivate(self) -> None:
@@ -119,8 +123,12 @@ class Buffer:
                 self._buffer.append(buffered)
 
                 if not report.is_acceptable and self._on_quality_fail is not None:
+                    now = time.monotonic()
                     for reason in report.fail_reasons:
-                        await self._on_quality_fail.put(reason)
+                        last_at = self._last_quality_fail_at.get(reason, 0.0)
+                        if now - last_at >= self._quality_fail_cooldown_sec:
+                            self._last_quality_fail_at[reason] = now
+                            await self._on_quality_fail.put(reason)
 
             except IOError:
                 logger.warning("프레임 읽기 실패, 재시도...")
@@ -133,6 +141,23 @@ class Buffer:
         if not self._buffer:
             return None
         return max(self._buffer, key=lambda bf: bf.quality.composite_score)
+
+    @property
+    def frame_count(self) -> int:
+        return len(self._buffer)
+
+    async def wait_until_ready(
+        self,
+        *,
+        min_frames: int = 3,
+        timeout_sec: float = 5.0,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            if len(self._buffer) >= min_frames:
+                return True
+            await asyncio.sleep(0.1)
+        return False
 
     def _assess_quality(self, frame: np.ndarray) -> QualityReport:
         """실시간 프레임 품질 평가 (블러 / 조도 / 글레어)."""

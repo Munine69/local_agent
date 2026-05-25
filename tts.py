@@ -189,13 +189,8 @@ class GTTSEngine(TTS):
         except Exception:
             logger.exception("TTS 합성 실패")
             return
-        if not pcm:
-            logger.error("TTS 합성 결과 PCM이 비어 있음: %s", text[:120])
+        if not pcm or self._stop_flag:
             return
-        if self._stop_flag:
-            logger.info("TTS 재생 전 중단됨: %s", text[:120])
-            return
-        logger.info("GTTSEngine PCM 생성 완료: %d bytes role=%s", len(pcm), trace_role)
         if hook is not None:
             hook(
                 f"tts_synthesize_end_{trace_role}",
@@ -207,7 +202,6 @@ class GTTSEngine(TTS):
             await self._speaker.play(pcm)
             if hook is not None:
                 hook(f"tts_play_end_{trace_role}")
-            logger.info("GTTSEngine 재생 완료 role=%s", trace_role)
         except Exception:
             logger.exception("Speaker 재생 실패")
 

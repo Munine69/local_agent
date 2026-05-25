@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from urllib.parse import quote, urlparse, urlunparse
 
 import cv2
 import numpy as np
@@ -19,14 +20,12 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 GSTREAMER_PIPELINE_TEMPLATE = (
-    "rtspsrc location={url} latency=100 ! "
+    "rtspsrc location=\"{url}\" latency=100 ! "
     "rtph264depay ! h264parse ! "
     "nvv4l2decoder ! nvvidconv ! "
     "video/x-raw,format=BGRx ! videoconvert ! "
     "video/x-raw,format=BGR ! appsink drop=1 sync=0"
 )
-
-FALLBACK_PIPELINE_TEMPLATE = "{url}"
 
 
 @dataclass
@@ -54,16 +53,29 @@ class Cam:
         await loop.run_in_executor(None, self._open_sync)
 
     def _open_sync(self) -> None:
-        pipeline = GSTREAMER_PIPELINE_TEMPLATE.format(url=self._config.url)
+        url = (self._config.url or "").strip()
+        if not url:
+            raise ConnectionError("RTSP URL이 비어 있습니다. .env의 RTSP_URL을 설정하세요.")
+        if urlparse(url).scheme != "rtsp":
+            raise ConnectionError(f"RTSP URL 형식이 아닙니다: {url}")
+
+        candidates = _rtsp_url_candidates(url)
+        pipeline = GSTREAMER_PIPELINE_TEMPLATE.format(url=candidates[0])
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if not cap.isOpened():
             logger.warning("GStreamer 파이프라인 실패, OpenCV 기본 백엔드로 폴백")
-            cap = cv2.VideoCapture(self._config.url)
+            cap.release()
+            for candidate in candidates:
+                cap = cv2.VideoCapture(candidate, cv2.CAP_FFMPEG)
+                if cap.isOpened():
+                    url = candidate
+                    break
+                cap.release()
         if not cap.isOpened():
-            raise ConnectionError(f"RTSP 연결 실패: {self._config.url}")
+            raise ConnectionError(f"RTSP 연결 실패: {url}")
         self._cap = cap
         self._running = True
-        logger.info("Cam 연결 성공: %s", self._config.url)
+        logger.info("Cam 연결 성공: %s", url)
 
     async def read_frame(self) -> np.ndarray:
         """단일 프레임을 비동기로 읽어 반환한다."""
@@ -102,3 +114,26 @@ class Cam:
     @property
     def is_opened(self) -> bool:
         return self._running and self._cap is not None and self._cap.isOpened()
+
+
+def _rtsp_url_candidates(url: str) -> list[str]:
+    parsed = urlparse(url)
+    if not parsed.username:
+        return [url]
+
+    username = quote(parsed.username, safe="")
+    password = quote(parsed.password or "", safe="")
+    host = parsed.hostname or ""
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    encoded = urlunparse(
+        (
+            parsed.scheme,
+            f"{username}:{password}@{host}",
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+    return [url] if encoded == url else [url, encoded]
