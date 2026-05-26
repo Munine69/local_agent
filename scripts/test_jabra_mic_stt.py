@@ -19,11 +19,10 @@ import asyncio
 import logging
 from pathlib import Path
 
-import yaml
-
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.config_loader import load_config
 from src.edge_node.audio_pipeline import AudioPipeline, AudioPipelineConfig
 
 
@@ -33,10 +32,7 @@ async def main() -> None:
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
-    config_path = Path(__file__).resolve().parent.parent / "config" / "agent_config.yaml"
-    with open(config_path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-
+    cfg = load_config()
     stt_cfg = cfg.get("stt", {})
     audio_cfg = cfg.get("audio", {})
 
@@ -50,14 +46,41 @@ async def main() -> None:
         silence_tail_ms=stt_cfg.get("silence_tail_ms", 700),
         min_utterance_ms=stt_cfg.get("min_utterance_ms", 300),
         max_utterance_ms=stt_cfg.get("max_utterance_ms", 12000),
+        whisper_backend=stt_cfg.get("whisper_backend", "faster_whisper"),
         whisper_model=stt_cfg.get("whisper_model", "small"),
         whisper_compute_type=stt_cfg.get("whisper_compute_type", "int8"),
         whisper_device=stt_cfg.get("whisper_device", "cpu"),
+        gemini_stt_model=stt_cfg.get("gemini_stt_model", "gemini-2.5-flash"),
+        gemini_api_key=stt_cfg.get("gemini_api_key", ""),
+        gemini_api_key_env=stt_cfg.get("gemini_api_key_env", "GEMINI_API_KEY"),
+        gemini_stt_prompt=stt_cfg.get("gemini_stt_prompt", ""),
         language=stt_cfg.get("language", "ko"),
         initial_prompt=stt_cfg.get(
             "initial_prompt",
             "오디스, 약, 처방전, 복용, 어르신, 사진, 찍어, 가져왔어",
         ),
+        wake_focus_prompt=stt_cfg.get("wake_focus_prompt", "오디스 오디스야"),
+        wake_focus_scan_enabled=stt_cfg.get("wake_focus_scan_enabled", True),
+        wake_focus_scan_min_duration_sec=float(
+            stt_cfg.get("wake_focus_scan_min_duration_sec", 2.5)
+        ),
+        wake_focus_tail_sec=float(stt_cfg.get("wake_focus_tail_sec", 2.8)),
+        wake_focus_head_sec=float(stt_cfg.get("wake_focus_head_sec", 2.5)),
+        wake_rolling_scan_enabled=stt_cfg.get("wake_rolling_scan_enabled", True),
+        wake_rolling_scan_interval_ms=int(
+            stt_cfg.get("wake_rolling_scan_interval_ms", 2000)
+        ),
+        wake_rolling_scan_min_speech_ms=int(
+            stt_cfg.get("wake_rolling_scan_min_speech_ms", 2500)
+        ),
+        wake_fast_path_enabled=stt_cfg.get("wake_fast_path_enabled", True),
+        wake_fast_path_max_duration_sec=float(
+            stt_cfg.get("wake_fast_path_max_duration_sec", 1.8)
+        ),
+        wake_stt_backend=stt_cfg.get("wake_stt_backend", "same"),
+        wake_whisper_model=stt_cfg.get("wake_whisper_model", "tiny"),
+        wake_whisper_compute_type=stt_cfg.get("wake_whisper_compute_type", "int8"),
+        wake_whisper_device=stt_cfg.get("wake_whisper_device", "cpu"),
     ))
 
     print("[mic-stt] Jabra 마이크 + faster-whisper 시작합니다 (Ctrl+C 로 종료)")

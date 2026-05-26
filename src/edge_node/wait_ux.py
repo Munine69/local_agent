@@ -108,6 +108,10 @@ class WaitUX:
         """Wait_UX --> TTS: TTS 출력 큐 연결."""
         self._tts_queue = queue
 
+    @staticmethod
+    def immediate_response_templates() -> tuple[str, ...]:
+        return tuple(_TEMPLATES[MentType.IMMEDIATE_RESPONSE])
+
     async def immediate_response(self) -> None:
         """VAD --> Wait_UX --> TTS: 즉시 응답 멘트 출력."""
         await self._speak(MentType.IMMEDIATE_RESPONSE)

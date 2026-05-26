@@ -70,6 +70,12 @@ class AudioPipelineConfig:
     wake_rolling_scan_enabled: bool = True
     wake_rolling_scan_interval_ms: int = 2000
     wake_rolling_scan_min_speech_ms: int = 2500
+    wake_fast_path_enabled: bool = True
+    wake_fast_path_max_duration_sec: float = 1.8
+    wake_stt_backend: str = "same"  # same | faster_whisper | openai_whisper | gemini_stt
+    wake_whisper_model: str = "tiny"
+    wake_whisper_compute_type: str = "int8"
+    wake_whisper_device: str = "cpu"
     discard_non_wake_background: bool = True
 
 
@@ -157,6 +163,8 @@ class AudioPipeline:
         )
         self._vad = webrtcvad.Vad(self._cfg.vad_aggressiveness)
         self._whisper = None  # lazy load
+        self._wake_whisper = None
+        self._wake_backend = self._cfg.whisper_backend
 
         self.wake_queue: asyncio.Queue[WakeWordResult] = asyncio.Queue()
         self.transcription_queue: asyncio.Queue[TranscriptionResult] = asyncio.Queue()
@@ -195,6 +203,7 @@ class AudioPipeline:
 
             self._whisper = genai.Client(api_key=api_key.strip())
             logger.info("Gemini STT 로드 완료: model=%s", self._cfg.gemini_stt_model)
+            self._load_wake_model()
             return
         if self._cfg.whisper_backend == "openai_whisper":
             logger.info(
@@ -212,6 +221,7 @@ class AudioPipeline:
                 device=self._cfg.whisper_device,
             )
             logger.info("openai-whisper 로드 완료")
+            self._load_wake_model()
             return
 
         logger.info(
@@ -228,6 +238,60 @@ class AudioPipeline:
             compute_type=self._cfg.whisper_compute_type,
         )
         logger.info("faster-whisper 로드 완료")
+        self._load_wake_model()
+
+    def _load_wake_model(self) -> None:
+        backend = (self._cfg.wake_stt_backend or "same").strip()
+        if backend == "same":
+            self._wake_backend = self._cfg.whisper_backend
+            self._wake_whisper = self._whisper
+            return
+        try:
+            if backend == "gemini_stt":
+                self._wake_backend = "gemini_stt"
+                self._wake_whisper = self._whisper
+                return
+            if backend == "openai_whisper":
+                import torch
+                import whisper
+
+                if self._cfg.wake_whisper_device == "cuda" and not torch.cuda.is_available():
+                    raise RuntimeError("wake_whisper_device=cuda 이지만 torch CUDA를 사용할 수 없습니다")
+                self._wake_whisper = whisper.load_model(
+                    self._cfg.wake_whisper_model,
+                    device=self._cfg.wake_whisper_device,
+                )
+                self._wake_backend = "openai_whisper"
+                logger.info(
+                    "wake 전용 openai-whisper 로드 완료: model=%s device=%s",
+                    self._cfg.wake_whisper_model,
+                    self._cfg.wake_whisper_device,
+                )
+                return
+            if backend == "faster_whisper":
+                from faster_whisper import WhisperModel
+
+                self._wake_whisper = WhisperModel(
+                    self._cfg.wake_whisper_model,
+                    device=self._cfg.wake_whisper_device,
+                    compute_type=self._cfg.wake_whisper_compute_type,
+                )
+                self._wake_backend = "faster_whisper"
+                logger.info(
+                    "wake 전용 faster-whisper 로드 완료: model=%s device=%s compute=%s",
+                    self._cfg.wake_whisper_model,
+                    self._cfg.wake_whisper_device,
+                    self._cfg.wake_whisper_compute_type,
+                )
+                return
+            raise ValueError(f"지원하지 않는 wake_stt_backend={backend}")
+        except Exception:
+            logger.exception(
+                "wake 전용 STT 로드 실패. 기본 STT로 fallback: backend=%s",
+                backend,
+            )
+            self._wake_backend = self._cfg.whisper_backend
+            self._wake_whisper = self._whisper
 
     def set_dialogue_capture_active(self, active: bool) -> None:
         """웨이크 대화 세션 중에는 웨이크어 없는 사용자 발화도 transcription 큐로 보낸다."""
@@ -403,6 +467,25 @@ class AudioPipeline:
 
         trace = get_latency_recorder()
         trace.mark("utterance_end", audio_duration_sec=round(duration, 2))
+        if self._should_try_fast_wake_scan(duration, already_woken):
+            trace.mark("wake_fast_scan_start", audio_duration_sec=round(duration, 2))
+            wake_hit, focused_text = await self._scan_short_wake_utterance(loop, pcm)
+            trace.mark(
+                "wake_fast_scan_end",
+                audio_duration_sec=round(duration, 2),
+                text_preview=(focused_text or "")[:120],
+                wake_detected=bool(wake_hit),
+                source="short",
+            )
+            if wake_hit:
+                logger.info(
+                    "짧은 발화 wake fast-path: '%s' -> '%s'",
+                    (focused_text or "")[:80],
+                    wake_hit,
+                )
+                await self._emit_wake(wake_hit, focused_text or wake_hit, started_at=started_at)
+                return
+
         trace.mark("stt_start", audio_duration_sec=round(duration, 2))
         text = await loop.run_in_executor(None, self._transcribe_sync, pcm)
         trace.mark(
@@ -489,6 +572,15 @@ class AudioPipeline:
             TranscriptionResult(text=text, confidence=1.0, timestamp=started_at)
         )
 
+    def _should_try_fast_wake_scan(self, duration: float, already_woken: bool) -> bool:
+        return (
+            self._cfg.wake_fast_path_enabled
+            and not already_woken
+            and not self._wake_suppressed
+            and self._cfg.wake_focus_scan_enabled
+            and duration <= self._cfg.wake_fast_path_max_duration_sec
+        )
+
     def _is_recent_tts_echo(self, text: str) -> bool:
         now = time.time()
         while self._recent_tts_texts and self._recent_tts_texts[0][0] < now:
@@ -522,7 +614,20 @@ class AudioPipeline:
                 TranscriptionResult(
                     text=remainder, confidence=1.0, timestamp=started_at
                 )
-            )
+        )
+
+    async def _scan_short_wake_utterance(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        pcm: bytes,
+    ) -> tuple[str | None, str]:
+        focused = await loop.run_in_executor(
+            None,
+            self._transcribe_wake_focused_sync,
+            pcm,
+        )
+        wake_hit = detect_wake_in_text(focused)
+        return wake_hit, (focused or "").strip()
 
     async def _scan_wake_in_noisy_utterance(
         self,
@@ -560,11 +665,13 @@ class AudioPipeline:
         return pcm[:max_bytes] if len(pcm) > max_bytes else pcm
 
     def _transcribe_wake_focused_sync(self, pcm_bytes: bytes) -> str:
-        if self._whisper is None or not pcm_bytes:
+        model = self._wake_whisper or self._whisper
+        backend = self._wake_backend or self._cfg.whisper_backend
+        if model is None or not pcm_bytes:
             return ""
         import numpy as np
 
-        if self._cfg.whisper_backend == "gemini_stt":
+        if backend == "gemini_stt":
             return self._transcribe_gemini_sync(
                 pcm_bytes,
                 prompt=(
@@ -574,19 +681,19 @@ class AudioPipeline:
             )
 
         audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        if self._cfg.whisper_backend == "openai_whisper":
-            result = self._whisper.transcribe(
+        if backend == "openai_whisper":
+            result = model.transcribe(
                 audio,
                 language=self._cfg.language,
                 initial_prompt=self._cfg.wake_focus_prompt,
-                fp16=self._cfg.whisper_device == "cuda",
+                fp16=self._cfg.wake_whisper_device == "cuda",
                 condition_on_previous_text=False,
                 temperature=0.0,
                 beam_size=1,
             )
             return normalize_transcript(str(result.get("text", "")))
 
-        segments, _info = self._whisper.transcribe(
+        segments, _info = model.transcribe(
             audio,
             language=self._cfg.language,
             initial_prompt=self._cfg.wake_focus_prompt,

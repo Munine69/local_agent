@@ -128,13 +128,30 @@ class GTTSEngine(TTS):
         self._sample_rate = sample_rate
         self._channels = channels
         self._stop_flag = False
+        self._cancel_version = 0
         self._on_latency_event = on_latency_event
+        self._pcm_cache: dict[str, bytes] = {}
 
     async def synthesize(self, text: str) -> bytes:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._synthesize_sync, text)
 
+    async def prepare_texts(self, texts: list[str] | tuple[str, ...]) -> None:
+        """Pre-synthesize fixed prompts so first wake acknowledgement is instant."""
+        for text in texts:
+            if not text or text in self._pcm_cache:
+                continue
+            try:
+                await self.synthesize(text)
+                logger.info("GTTSEngine cache warmed: %s", text[:80])
+            except Exception:
+                logger.exception("GTTSEngine cache warm failed: %s", text[:80])
+
     def _synthesize_sync(self, text: str) -> bytes:
+        cached = self._pcm_cache.get(text)
+        if cached is not None:
+            return cached
+
         from gtts import gTTS  # lazy
 
         buf = io.BytesIO()
@@ -164,6 +181,7 @@ class GTTSEngine(TTS):
                 proc.stderr.decode(errors="replace")[:300],
             )
             return b""
+        self._pcm_cache[text] = proc.stdout
         return proc.stdout
 
     async def speak(
@@ -176,6 +194,7 @@ class GTTSEngine(TTS):
         if not text:
             return
         self._stop_flag = False
+        cancel_version = self._cancel_version
         logger.info("GTTSEngine speak [%s]: %s", priority.name, text)
         hook = self._on_latency_event
         if hook is not None:
@@ -192,7 +211,7 @@ class GTTSEngine(TTS):
         if not pcm:
             logger.error("TTS 합성 결과 PCM이 비어 있음: %s", text[:120])
             return
-        if self._stop_flag:
+        if self._stop_flag or cancel_version != self._cancel_version:
             logger.info("TTS 재생 전 중단됨: %s", text[:120])
             return
         logger.info("GTTSEngine PCM 생성 완료: %d bytes role=%s", len(pcm), trace_role)
@@ -213,6 +232,7 @@ class GTTSEngine(TTS):
 
     async def stop(self) -> None:
         self._stop_flag = True
+        self._cancel_version += 1
         try:
             await self._speaker.stop()
         except Exception:
