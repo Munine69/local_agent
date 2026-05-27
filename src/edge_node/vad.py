@@ -20,22 +20,60 @@ logger = logging.getLogger(__name__)
 
 WAKE_WORDS = [
     "오디스야",
-    "오디스",
-    "어디스",
-    "오디서",
+    "오디세이",
+    "오딧세이",
     "오디스요",
     "오디스아",
+    "오디스여",
+    "오디스",
+    "오디세",
+    "오딧스",
+    "오딧세",
+    "오디즈",
+    "오디쓰",
+    "오디수",
+    "오티스",
+    "오티즈",
+    "오티쓰",
+    "오티세",
+    "오티세이",
+    "오지스",
+    "오지즈",
+    "오지쓰",
+    "우디스",
+    "우디즈",
+    "오리스",
+    "보리스",
+    "보리쓰",
+    "보디스",
+    "보디즈",
+    "어디스",
+    "어딧스",
+    "오디서",
     "저기",
     "얘야",
-    "오디",
 ]
+
+WAKE_WORD_ONLY_ALIASES = (
+    "야",
+    "오디",
+    "여보세요",
+    "들려",
+    "잘들려",
+    "듣고있어",
+    "듣고있니",
+    "내말들려",
+    "어디서",
+)
 
 # Whisper가 자주 내는 오인식 패턴 (공백/띄어쓰기 제거 후 비교)
 _WAKE_FUZZY_PATTERNS = (
-    re.compile(r"오\s*디\s*스"),
-    re.compile(r"어\s*디\s*스"),
-    re.compile(r"오디[스sS]"),
-    re.compile(r"어디[스sS]"),
+    re.compile(r"[오어우]\s*디\s*[스즈쓰수sS]"),
+    re.compile(r"오\s*딧\s*[스세]"),
+    re.compile(r"오\s*티\s*[스즈쓰]"),
+    re.compile(r"오\s*지\s*[스즈쓰]"),
+    re.compile(r"보\s*리\s*[스쓰]"),
+    re.compile(r"보\s*디\s*[스즈]"),
 )
 
 
@@ -44,11 +82,15 @@ def detect_wake_in_text(text: str) -> str | None:
     raw = (text or "").strip()
     if not raw:
         return None
+    compact = _compact_wake_text(raw)
+    if compact in WAKE_WORD_ONLY_ALIASES or _has_prefix_alias(raw):
+        return "오디스"
     for wake in sorted(WAKE_WORDS, key=len, reverse=True):
         if wake in raw:
             return wake
-    compact = re.sub(r"[\s,.!?~·]+", "", raw.lower())
-    for wake in ("오디스야", "오디스", "어디스", "오디서"):
+    for wake in WAKE_WORDS:
+        if wake in {"오디", "저기", "얘야"}:
+            continue
         if wake in compact:
             return "오디스"
     for pattern in _WAKE_FUZZY_PATTERNS:
@@ -60,6 +102,11 @@ def detect_wake_in_text(text: str) -> str | None:
 def strip_wake_from_text(text: str, wake_hit: str) -> str:
     """웨이크 구간을 제거한 나머지 발화."""
     raw = (text or "").strip()
+    compact = _compact_wake_text(raw)
+    if compact in WAKE_WORD_ONLY_ALIASES:
+        return ""
+    if _has_prefix_alias(raw):
+        return re.sub(r"^\s*(야|오디|여보세요|들려|잘\s*들려|듣고\s*있어|듣고\s*있니|내\s*말\s*들려)[\s,.!?~·]+", "", raw, count=1).strip(" ,.!?~")
     if wake_hit in raw:
         return raw.replace(wake_hit, "", 1).strip(" ,.!?~")
     for pattern in _WAKE_FUZZY_PATTERNS:
@@ -70,6 +117,19 @@ def strip_wake_from_text(text: str, wake_hit: str) -> str:
         if wake in raw:
             return raw.replace(wake, "", 1).strip(" ,.!?~")
     return raw.strip(" ,.!?~")
+
+
+def _compact_wake_text(text: str) -> str:
+    return re.sub(r"[\s,.!?~·]+", "", (text or "").strip().lower())
+
+
+def _has_prefix_alias(text: str) -> bool:
+    return bool(
+        re.match(
+            r"^\s*(야|오디|여보세요|들려|잘\s*들려|듣고\s*있어|듣고\s*있니|내\s*말\s*들려)[\s,.!?~·]+",
+            text or "",
+        )
+    )
 
 
 @dataclass

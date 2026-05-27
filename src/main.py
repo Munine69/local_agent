@@ -237,11 +237,11 @@ class LocalAgent:
                 language=stt_cfg.get("language", "ko"),
                 initial_prompt=stt_cfg.get(
                     "initial_prompt",
-                    "오디스, 약, 처방전, 복용, 어르신, 사진, 찍어, 가져왔어",
+                    "오디스, 오디세, 오딧스, 오티스, 오지스, 보리스, 약, 처방전, 복용, 어르신, 사진, 찍어, 가져왔어",
                 ),
                 wake_focus_prompt=stt_cfg.get(
                     "wake_focus_prompt",
-                    "오디스, 오디스야, 어디스, 오디서",
+                    "오디스, 오디스야, 오디세, 오딧스, 오티스, 오지스, 보리스, 어디스, 오디서, 들려",
                 ),
                 wake_focus_scan_enabled=stt_cfg.get("wake_focus_scan_enabled", True),
                 wake_focus_scan_min_duration_sec=float(

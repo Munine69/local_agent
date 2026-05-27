@@ -44,9 +44,9 @@ class AudioPipelineConfig:
     whisper_device: str = "cpu"  # cpu | cuda
     language: str = "ko"
     initial_prompt: str = (
-        "오디스, 오디스야, 어디스, 약, 처방전, 복용, 사진, 찍어, 가져왔어"
+        "오디스, 오디스야, 오디세, 오딧스, 오티스, 오지스, 보리스, 어디스, 약, 처방전, 복용, 사진, 찍어, 가져왔어"
     )
-    wake_focus_prompt: str = "오디스, 오디스야, 어디스, 오디서"
+    wake_focus_prompt: str = "오디스, 오디스야, 오디세, 오딧스, 오티스, 오지스, 보리스, 어디스, 오디서, 들려"
     wake_focus_scan_enabled: bool = True
     wake_focus_scan_min_duration_sec: float = 2.5
     wake_focus_tail_sec: float = 2.8

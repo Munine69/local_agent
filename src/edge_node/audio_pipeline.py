@@ -61,8 +61,8 @@ class AudioPipelineConfig:
         "추측하거나 문장을 보완하지 마세요. 음성이 없거나 불명확하면 빈 문자열만 반환하세요."
     )
     language: str = "ko"
-    initial_prompt: str = "오디스 오디스야 김영수 약"
-    wake_focus_prompt: str = "오디스 오디스야"
+    initial_prompt: str = "오디스 오디스야 오디세 오딧스 오티스 오지스 보리스 김영수 약"
+    wake_focus_prompt: str = "오디스 오디스야 오디세 오딧스 오티스 오지스 보리스 들려"
     wake_focus_scan_enabled: bool = True
     wake_focus_scan_min_duration_sec: float = 2.5
     wake_focus_tail_sec: float = 2.8
